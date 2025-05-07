@@ -239,13 +239,11 @@ def stack_maybe_dictobs(arrs: List[ObsVar]) -> ObsVar:
 @overload
 def maybe_unwrap_dictobs(  # type: ignore[misc]
     maybe_dictobs: DictObs,
-) -> Dict[str, np.ndarray]:
-    ...
+) -> Dict[str, np.ndarray]: ...
 
 
 @overload
-def maybe_unwrap_dictobs(maybe_dictobs: T) -> T:
-    ...
+def maybe_unwrap_dictobs(maybe_dictobs: T) -> T: ...
 
 
 def maybe_unwrap_dictobs(maybe_dictobs):
@@ -259,13 +257,11 @@ def maybe_unwrap_dictobs(maybe_dictobs):
 
 
 @overload
-def maybe_wrap_in_dictobs(obs: Union[Dict[str, np.ndarray], DictObs]) -> DictObs:
-    ...
+def maybe_wrap_in_dictobs(obs: Union[Dict[str, np.ndarray], DictObs]) -> DictObs: ...
 
 
 @overload
-def maybe_wrap_in_dictobs(obs: np.ndarray) -> np.ndarray:
-    ...
+def maybe_wrap_in_dictobs(obs: np.ndarray) -> np.ndarray: ...
 
 
 def maybe_wrap_in_dictobs(
@@ -333,14 +329,11 @@ def dataclass_quick_asdict(obj) -> Dict[str, Any]:
 
 
 @dataclasses.dataclass(frozen=True)
-class Trajectory:
+class ObservationSequence:
     """A trajectory, e.g. a one episode rollout from an expert policy."""
 
     obs: Observation
     """Observations, shape (trajectory_len + 1, ) + observation_shape."""
-
-    acts: np.ndarray
-    """Actions, shape (trajectory_len, ) + action_shape."""
 
     infos: Optional[np.ndarray]
     """An array of info dicts, shape (trajectory_len, ).
@@ -357,9 +350,20 @@ class Trajectory:
     contain the final state of an episode (even if missing the start of the episode).
     """
 
-    def __len__(self) -> int:
-        """Returns number of transitions, equal to the number of actions."""
-        return len(self.acts)
+    def __post_init__(self):
+        """Performs input validation: check shapes are as specified in docstring."""
+        pass
+        # breakpoint()
+        # if len(self.obs) != len(self.acts) + 1:
+        #     raise ValueError(
+        #         "expected one more observations than actions: "
+        #         f"{len(self.obs)} != {len(self.acts)} + 1",
+        #     )
+        # if self.infos is not None and len(self.infos) != len(self.acts):
+        #     raise ValueError(
+        #         "infos when present must be present for each action: "
+        #         f"{len(self.infos)} != {len(self.acts)}",
+        #     )
 
     def __eq__(self, other) -> bool:
         if not isinstance(other, Trajectory):
@@ -390,20 +394,9 @@ class Trajectory:
 
         return True
 
-    def __post_init__(self):
-        """Performs input validation: check shapes are as specified in docstring."""
-        if len(self.obs) != len(self.acts) + 1:
-            raise ValueError(
-                "expected one more observations than actions: "
-                f"{len(self.obs)} != {len(self.acts)} + 1",
-            )
-        if self.infos is not None and len(self.infos) != len(self.acts):
-            raise ValueError(
-                "infos when present must be present for each action: "
-                f"{len(self.infos)} != {len(self.acts)}",
-            )
-        if len(self.acts) == 0:
-            raise ValueError("Degenerate trajectory: must have at least one action.")
+    def __len__(self) -> int:
+        """Returns number of transitions, equal to the number of state observations."""
+        return len(self.obs)
 
     def __setstate__(self, state):
         if "terminal" not in state:
@@ -414,6 +407,36 @@ class Trajectory:
             )
             state["terminal"] = True
         self.__dict__.update(state)
+
+
+@dataclasses.dataclass(frozen=True)
+class Trajectory(ObservationSequence):
+    """A trajectory, e.g. a one episode rollout from an expert policy.
+    Created by adding actions to an `ObservationSequence`."""
+
+    acts: np.ndarray
+    """Actions, shape (trajectory_len, ) + action_shape."""
+
+    def __init__(self, obs, acts, infos, terminal):  # Define parameter order
+        super().__init__(obs, infos, terminal)
+        object.__setattr__(self, "acts", acts)  # Sets attribute in frozen dataclass
+        if len(self.acts) == 0:
+            raise ValueError("Degenerate trajectory: must have at least one action.")
+        if len(self.obs) != len(self.acts) + 1:
+            raise ValueError(
+                "expected one more observations than actions: "
+                f"{len(self.obs)} != {len(self.acts)} + 1",
+            )
+        if self.infos is not None and len(self.infos) != len(self.acts):
+            raise ValueError(
+                "infos when present must be present for each action: "
+                f"{len(self.infos)} != {len(self.acts)}",
+            )
+        super().__post_init__()
+
+    def __len__(self) -> int:
+        """Returns number of transitions, equal to the number of actions."""
+        return len(self.acts)
 
 
 def _rews_validation(rews: np.ndarray, acts: np.ndarray):
@@ -433,10 +456,18 @@ class TrajectoryWithRew(Trajectory):
     rews: np.ndarray
     """Reward, shape (trajectory_len, ). dtype float."""
 
-    def __post_init__(self):
-        """Performs input validation, including for rews."""
-        super().__post_init__()
+    def __init__(self, obs, acts, infos, terminal, rews):  # Define parameter order
+        super().__init__(obs, acts, infos, terminal)
+        object.__setattr__(self, "rews", rews)  # Sets attribute in frozen dataclass
         _rews_validation(self.rews, self.acts)
+
+    # def __post_init__(self):
+    #     breakpoint()
+    #     Trajectory.__init__(self.obs, self.acts, self.infos, self.terminal)
+    #     breakpoint()
+    #     """Performs input validation, including for rews."""
+    #     # super().__post_init__()
+    #     _rews_validation(self.rews, self.acts)
 
 
 Pair = Tuple[T, T]
@@ -475,6 +506,142 @@ def transitions_collate_fn(
 
 
 TransitionsMinimalSelf = TypeVar("TransitionsMinimalSelf", bound="TransitionsMinimal")
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservationTransitionsMinimal(
+    th_data.Dataset, Sequence[Mapping[str, np.ndarray]]
+):
+    """A Torch-compatible `Dataset` of observations made along a trajectory.
+
+    This class and its subclasses are usually instantiated via
+    `imitation.data.rollout.flatten_observation_sequence`.
+
+    Indexing an instance `trans` of TransitionsMinimal with an integer `i`
+    returns the `i`th `Dict[str, np.ndarray]` sample, whose keys are the field
+    names of each dataclass field and whose values are the ith elements of each field
+    value.
+
+    Slicing returns a possibly empty instance of `ObservationTransitionsMinimal` where each
+    field has been sliced.
+    """
+
+    obs: Observation
+    """
+    Previous observations. Shape: (batch_size, ) + observation_shape.
+
+    The i'th observation `obs[i]` in this array is the observation seen
+    by the agent when choosing action `acts[i]`. `obs[i]` is not required to
+    be from the timestep preceding `obs[i+1]`.
+    """
+
+    infos: np.ndarray
+    """Array of info dicts. Shape: (batch_size,)."""
+
+    def __len__(self) -> int:
+        """Returns number of transitions. Always positive."""
+        return len(self.obs)
+
+    def __post_init__(self):
+        """Performs input validation: check shapes & dtypes match docstring.
+
+        Also make array values read-only.
+
+        Raises:
+            ValueError: if batch size (array length) is inconsistent
+                between `obs`, `acts` and `infos`.
+        """
+        for val in vars(self).values():
+            if isinstance(val, np.ndarray):
+                val.setflags(write=False)
+
+        if len(self.infos) != len(self.obs):
+            raise ValueError(
+                "obs and infos must have same number of timesteps: "
+                f"{len(self.obs)} != {len(self.infos)}",
+            )
+
+    # TODO(adam): uncomment below once pytype bug fixed in
+    # issue https://github.com/google/pytype/issues/1108
+    # @overload
+    # def __getitem__(self: T, key: slice) -> T:
+    #     pass  # pragma: no cover
+    #
+    # @overload
+    # def __getitem__(self, key: int) -> Mapping[str, np.ndarray]:
+    #     pass  # pragma: no cover
+
+    @overload
+    def __getitem__(self, key: int) -> Mapping[str, np.ndarray]:
+        pass
+
+    @overload
+    def __getitem__(self: TransitionsMinimalSelf, key: slice) -> TransitionsMinimalSelf:
+        pass
+
+    def __getitem__(self, key):
+        """See TransitionsMinimal docstring for indexing and slicing semantics."""
+        d = dataclass_quick_asdict(self)
+        d_item = {k: v[key] for k, v in d.items()}
+
+        if isinstance(key, slice):
+            # Return type is the same as this dataclass. Replace field value with
+            # slices.
+            return dataclasses.replace(self, **d_item)
+        else:
+            assert isinstance(key, int)
+            # Return type is a dictionary. Array values have no batch dimension.
+            #
+            # Dictionary of np.ndarray values is a convenient
+            # torch.util.data.Dataset return type, as a torch.util.data.DataLoader
+            # taking in this `Dataset` as its first argument knows how to
+            # automatically concatenate several dictionaries together to make
+            # a single dictionary batch with `torch.Tensor` values.
+            return d_item
+
+
+@dataclasses.dataclass(frozen=True)
+class ObservationTransitions(ObservationTransitionsMinimal):
+    """A batch of obs-obs-done transitions."""
+
+    next_obs: Observation
+    """New observation. Shape: (batch_size, ) + observation_shape.
+
+    The i'th observation `next_obs[i]` in this array is the observation
+    after the agent has taken action `acts[i]`.
+
+    Invariants:
+        * `next_obs.dtype == obs.dtype`
+        * `len(next_obs) == len(obs)`
+    """
+
+    dones: np.ndarray
+    """
+    Boolean array indicating episode termination. Shape: (batch_size, ).
+
+    `done[i]` is true iff `next_obs[i]` the last observation of an episode.
+    """
+
+    def __post_init__(self):
+        """Performs input validation: check shapes & dtypes match docstring."""
+        super().__post_init__()
+        if self.obs.shape != self.next_obs.shape:
+            raise ValueError(
+                "obs and next_obs must have same shape: "
+                f"{self.obs.shape} != {self.next_obs.shape}",
+            )
+        if self.obs.dtype != self.next_obs.dtype:
+            raise ValueError(
+                "obs and next_obs must have the same dtype: "
+                f"{self.obs.dtype} != {self.next_obs.dtype}",
+            )
+        # if self.dones.shape != (len(self.acts),):
+        #     raise ValueError(
+        #         "dones must be 1D array, one entry for each timestep: "
+        #         f"{self.dones.shape} != ({len(self.acts)},)",
+        #     )
+        if self.dones.dtype != bool:
+            raise ValueError(f"dones must be boolean, not {self.dones.dtype}")
 
 
 @dataclasses.dataclass(frozen=True)
