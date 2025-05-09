@@ -588,7 +588,7 @@ def flatten_observation_sequence(
         parts["obs"].append(obs[:-1])
         parts["next_obs"].append(obs[1:])
 
-        dones = np.zeros(len(traj.acts), dtype=bool)
+        dones = np.zeros(len(obs) - 1, dtype=bool)
         dones[-1] = traj.terminal
         parts["dones"].append(dones)
 
@@ -604,7 +604,7 @@ def flatten_observation_sequence(
     }
     lengths = set(map(len, cat_parts.values()))
     assert len(lengths) == 1, f"expected one length, got {lengths}"
-    return types.Transitions(**cat_parts)
+    return types.ObservationTransitions(**cat_parts)
 
 
 def flatten_trajectories(

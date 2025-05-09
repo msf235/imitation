@@ -292,6 +292,20 @@ def map_maybe_dict(fn, maybe_dict):
         return fn(maybe_dict)
 
 
+class ObservationTransitionMappingNoNextObs(TypedDict):
+    """Dictionary with `obs`"""
+
+    obs: Union[Observation, th.Tensor]
+
+
+class ObservationTransitionMapping(ObservationTransitionMappingNoNextObs, total=False):
+    """Dictionary with `obs`, maybe also `next_obs`, `dones`, `rew`."""
+
+    next_obs: Union[Observation, th.Tensor]
+    dones: AnyTensor
+    rew: AnyTensor
+
+
 class TransitionMappingNoNextObs(TypedDict):
     """Dictionary with `obs` and `acts`."""
 
@@ -407,6 +421,18 @@ class ObservationSequence:
             )
             state["terminal"] = True
         self.__dict__.update(state)
+
+
+@dataclasses.dataclass(frozen=True, eq=False)
+class ObservationSequenceWithRew(ObservationSequence):
+    """An `ObservationSequence` that additionally includes reward information."""
+
+    rews: np.ndarray
+    """Reward, shape (trajectory_len, ). dtype float."""
+
+    def __post_init__(self):  # Define parameter order
+        pass
+        # _rews_validation(self.rews, self.acts)
 
 
 @dataclasses.dataclass(frozen=True)

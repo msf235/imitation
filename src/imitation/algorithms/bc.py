@@ -378,9 +378,8 @@ class BC(algo_base.DemonstrationAlgorithm):
             self.minibatch_size,
         )
 
-    def train(
+    def _prep_train(
         self,
-        *,
         n_epochs: Optional[int] = None,
         n_batches: Optional[int] = None,
         on_epoch_end: Optional[Callable[[], None]] = None,
@@ -391,35 +390,6 @@ class BC(algo_base.DemonstrationAlgorithm):
         progress_bar: bool = True,
         reset_tensorboard: bool = False,
     ):
-        """Train with supervised learning for some number of epochs.
-
-        Here an 'epoch' is just a complete pass through the expert data loader,
-        as set by `self.set_expert_data_loader()`. Note, that when you specify
-        `n_batches` smaller than the number of batches in an epoch, the `on_epoch_end`
-        callback will never be called.
-
-        Args:
-            n_epochs: Number of complete passes made through expert data before ending
-                training. Provide exactly one of `n_epochs` and `n_batches`.
-            n_batches: Number of batches loaded from dataset before ending training.
-                Provide exactly one of `n_epochs` and `n_batches`.
-            on_epoch_end: Optional callback with no parameters to run at the end of each
-                epoch.
-            on_batch_end: Optional callback with no parameters to run at the end of each
-                batch.
-            log_interval: Log stats after every log_interval batches.
-            log_rollouts_venv: If not None, then this VecEnv (whose observation and
-                actions spaces must match `self.observation_space` and
-                `self.action_space`) is used to generate rollout stats, including
-                average return and average episode length. If None, then no rollouts
-                are generated.
-            log_rollouts_n_episodes: Number of rollouts to generate when calculating
-                rollout stats. Non-positive number disables rollouts.
-            progress_bar: If True, then show a progress bar during training.
-            reset_tensorboard: If True, then start plotting to Tensorboard from x=0
-                even if `.train()` logged to Tensorboard previously. Has no practical
-                effect if `.train()` is being called for the first time.
-        """
         if reset_tensorboard:
             self._bc_logger.reset_tensorboard_steps()
         self._bc_logger.log_epoch(0)
@@ -480,6 +450,18 @@ class BC(algo_base.DemonstrationAlgorithm):
                 on_batch_end()
 
         self.optimizer.zero_grad()
+
+        return batches_with_stats
+
+    def _train_loop(
+        self,
+        batches_with_stats: Iterable[
+            Tuple[Tuple[int, int, int], types.TransitionMapping]
+        ],
+        process_batch: Callable[[], None],
+    ):
+        num_samples_so_far = 0
+        batch_num = 0
         for (
             batch_num,
             minibatch_size,
@@ -508,3 +490,172 @@ class BC(algo_base.DemonstrationAlgorithm):
             # if there remains an incomplete batch
             batch_num += 1
             process_batch()
+
+    def train(
+        self,
+        *,
+        n_epochs: Optional[int] = None,
+        n_batches: Optional[int] = None,
+        on_epoch_end: Optional[Callable[[], None]] = None,
+        on_batch_end: Optional[Callable[[], None]] = None,
+        log_interval: int = 500,
+        log_rollouts_venv: Optional[vec_env.VecEnv] = None,
+        log_rollouts_n_episodes: int = 5,
+        progress_bar: bool = True,
+        reset_tensorboard: bool = False,
+    ):
+        """Train with supervised learning for some number of epochs.
+
+        Here an 'epoch' is just a complete pass through the expert data loader,
+        as set by `self.set_expert_data_loader()`. Note, that when you specify
+        `n_batches` smaller than the number of batches in an epoch, the `on_epoch_end`
+        callback will never be called.
+
+        Args:
+            n_epochs: Number of complete passes made through expert data before ending
+                training. Provide exactly one of `n_epochs` and `n_batches`.
+            n_batches: Number of batches loaded from dataset before ending training.
+                Provide exactly one of `n_epochs` and `n_batches`.
+            on_epoch_end: Optional callback with no parameters to run at the end of each
+                epoch.
+            on_batch_end: Optional callback with no parameters to run at the end of each
+                batch.
+            log_interval: Log stats after every log_interval batches.
+            log_rollouts_venv: If not None, then this VecEnv (whose observation and
+                actions spaces must match `self.observation_space` and
+                `self.action_space`) is used to generate rollout stats, including
+                average return and average episode length. If None, then no rollouts
+                are generated.
+            log_rollouts_n_episodes: Number of rollouts to generate when calculating
+                rollout stats. Non-positive number disables rollouts.
+            progress_bar: If True, then show a progress bar during training.
+            reset_tensorboard: If True, then start plotting to Tensorboard from x=0
+                even if `.train()` logged to Tensorboard previously. Has no practical
+                effect if `.train()` is being called for the first time.
+        """
+        batches_with_stats = self._prep_train(
+            n_epochs=n_epochs,
+            n_batches=n_batches,
+            on_epoch_end=on_epoch_end,
+            on_batch_end=on_batch_end,
+            log_interval=log_interval,
+            log_rollouts_venv=log_rollouts_venv,
+            log_rollouts_n_episodes=log_rollouts_n_episodes,
+            progress_bar=progress_bar,
+            reset_tensorboard=reset_tensorboard,
+        )
+        self._train_loop(
+            batches_with_stats,
+            n_epochs=n_epochs,
+            n_batches=n_batches,
+            on_epoch_end=on_epoch_end,
+            on_batch_end=on_batch_end,
+            log_interval=log_interval,
+            log_rollouts_venv=log_rollouts_venv,
+            log_rollouts_n_episodes=log_rollouts_n_episodes,
+            progress_bar=progress_bar,
+            reset_tensorboard=reset_tensorboard,
+            #
+        )
+
+
+class InverseMLP(th.nn.Module):
+    def __init__(self, obs_dim, act_dim, hidden_sizes=(256, 256)):
+        super().__init__()
+        layers = []
+        in_dim = obs_dim * 2
+        for h in hidden_sizes:
+            layers += [th.nn.Linear(in_dim, h), th.nn.ReLU()]
+            in_dim = h
+        layers += [th.nn.Linear(in_dim, act_dim)]
+        self.model = th.nn.Sequential(*layers)
+
+    def forward(self, x):
+        # x has shape (batch, obs_dim*2): concat([s_t, s_{t+1}])
+        return self.model(x)
+
+
+class BCO(BC):
+    """Behavioral Cloning from Observations (BCO)."""
+
+    def __init__(
+        self,
+        *,
+        observation_space: gym.Space,
+        action_space: gym.Space,
+        rng: np.random.Generator,
+        policy: Optional[policies.ActorCriticPolicy] = None,
+        state_observations: Optional[algo_base.AnyObservationTransitions] = None,
+        batch_size: int = 32,
+        minibatch_size: Optional[int] = None,
+        optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
+        ent_weight: float = 1e-3,
+        l2_weight: float = 0.0,
+        device: Union[str, th.device] = "auto",
+        custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
+    ):
+        """Builds BC.
+
+        Args:
+            observation_space: the observation space of the environment.
+            action_space: the action space of the environment.
+            rng: the random state to use for the random number generator.
+            policy: a Stable Baselines3 policy; if unspecified,
+                defaults to `FeedForward32Policy`.
+            state_observations: Demonstrations from an expert (optional). Transitions
+                expressed directly as a `types.ObservationTransitionsMinimal` object, a sequence
+                of observation sequences, or an iterable of observation sequence batches (mappings from
+                keywords to arrays containing observations, etc).
+            batch_size: The number of samples in each batch of expert data.
+            minibatch_size: size of minibatch to calculate gradients over.
+                The gradients are accumulated until `batch_size` examples
+                are processed before making an optimization step. This
+                is useful in GPU training to reduce memory usage, since
+                fewer examples are loaded into memory at once,
+                facilitating training with larger batch sizes, but is
+                generally slower. Must be a factor of `batch_size`.
+                Optional, defaults to `batch_size`.
+            optimizer_cls: optimiser to use for supervised training.
+            optimizer_kwargs: keyword arguments, excluding learning rate and
+                weight decay, for optimiser construction.
+            ent_weight: scaling applied to the policy's entropy regularization.
+            l2_weight: scaling applied to the policy's L2 regularization.
+            device: name/identity of device to place policy on.
+            custom_logger: Where to log to; if None (default), creates a new logger.
+
+        Raises:
+            ValueError: If `weight_decay` is specified in `optimizer_kwargs` (use the
+                parameter `l2_weight` instead), or if the batch size is not a multiple
+                of the minibatch size.
+        """
+        super().__init__(
+            observation_space=observation_space,
+            action_space=action_space,
+            rng=rng,
+            policy=policy,
+            demonstrations=None,
+            batch_size=batch_size,
+            minibatch_size=minibatch_size,
+            optimizer_cls=optimizer_cls,
+            optimizer_kwargs=optimizer_kwargs,
+            ent_weight=ent_weight,
+            l2_weight=l2_weight,
+            device=device,
+            custom_logger=custom_logger,
+        )
+        self._demo_data_loader: Optional[
+            Iterable[types.ObservationTransitionMapping]
+        ] = None
+        self.inverse_model = InverseMLP(
+            obs_dim=observation_space.shape[0],
+            act_dim=action_space.shape[0],
+        )
+        # In the policy, actions will be inferred (rather than given)
+
+    def _infer_actions(self, batch_observations):
+        s_t = batch_observations[:-1]
+        s_tp1 = batch_observations[1:]
+        batch_transitions = th.cat([s_t, s_tp1], dim=1)
+        batch_inferred_actions = self.inverse_model(batch_transitions)
+        return batch_inferred_actions

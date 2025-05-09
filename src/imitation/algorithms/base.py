@@ -121,6 +121,15 @@ class BaseImitationAlgorithm(abc.ABC):
         self.logger = state.get("_logger") or imit_logger.configure()
 
 
+ObservationTransitionKind = TypeVar(
+    "ObservationTransitionKind", bound=types.ObservationTransitionsMinimal
+)
+AnyObservationTransitions = Union[
+    Iterable[types.ObservationSequence],
+    Iterable[types.ObservationTransitionMapping],
+    types.ObservationTransitionsMinimal,
+]
+
 TransitionKind = TypeVar("TransitionKind", bound=types.TransitionsMinimal)
 AnyTransitions = Union[
     Iterable[types.Trajectory],
