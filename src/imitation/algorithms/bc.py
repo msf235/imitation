@@ -394,7 +394,7 @@ class BC(algo_base.DemonstrationAlgorithm):
             self._bc_logger.reset_tensorboard_steps()
         self._bc_logger.log_epoch(0)
 
-        compute_rollout_stats = RolloutStatsComputer(
+        self._compute_rollout_stats = RolloutStatsComputer(
             log_rollouts_venv,
             log_rollouts_n_episodes,
         )
@@ -431,34 +431,40 @@ class BC(algo_base.DemonstrationAlgorithm):
             )
             tqdm_progress_bar = batches_with_stats
 
-        def process_batch():
-            self.optimizer.step()
-            self.optimizer.zero_grad()
-
-            if batch_num % log_interval == 0:
-                rollout_stats = compute_rollout_stats(self.policy, self.rng)
-
-                self._bc_logger.log_batch(
-                    batch_num,
-                    minibatch_size,
-                    num_samples_so_far,
-                    training_metrics,
-                    rollout_stats,
-                )
-
-            if on_batch_end is not None:
-                on_batch_end()
-
+    def _process_batch(
+        self,
+        batch_num,
+        log_interval,
+        minibatch_size,
+        num_samples_so_far,
+        training_metrics,
+        on_batch_end,
+    ):
+        self.optimizer.step()
         self.optimizer.zero_grad()
 
-        return batches_with_stats
+        if batch_num % log_interval == 0:
+            rollout_stats = self._compute_rollout_stats(self.policy, self.rng)
+
+            self._bc_logger.log_batch(
+                batch_num,
+                minibatch_size,
+                num_samples_so_far,
+                training_metrics,
+                rollout_stats,
+            )
+
+        if on_batch_end is not None:
+            on_batch_end()
+
+        self.optimizer.zero_grad()
 
     def _train_loop(
         self,
         batches_with_stats: Iterable[
             Tuple[Tuple[int, int, int], types.TransitionMapping]
         ],
-        process_batch: Callable[[], None],
+        on_batch_end,
     ):
         num_samples_so_far = 0
         batch_num = 0
@@ -485,11 +491,18 @@ class BC(algo_base.DemonstrationAlgorithm):
 
             batch_num = batch_num * self.minibatch_size // self.batch_size
             if num_samples_so_far % self.batch_size == 0:
-                process_batch()
+                self._process_batch(
+                    batch_num,
+                    log_interval,
+                    minibatch_size,
+                    num_samples_so_far,
+                    training_metrics,
+                    on_batch_end,
+                )
         if num_samples_so_far % self.batch_size != 0:
             # if there remains an incomplete batch
             batch_num += 1
-            process_batch()
+            self._process_batch()
 
     def train(
         self,
@@ -549,7 +562,6 @@ class BC(algo_base.DemonstrationAlgorithm):
             n_epochs=n_epochs,
             n_batches=n_batches,
             on_epoch_end=on_epoch_end,
-            on_batch_end=on_batch_end,
             log_interval=log_interval,
             log_rollouts_venv=log_rollouts_venv,
             log_rollouts_n_episodes=log_rollouts_n_episodes,
