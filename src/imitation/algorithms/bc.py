@@ -378,8 +378,9 @@ class BC(algo_base.DemonstrationAlgorithm):
             self.minibatch_size,
         )
 
-    def _prep_train(
+    def train(
         self,
+        *,
         n_epochs: Optional[int] = None,
         n_batches: Optional[int] = None,
         on_epoch_end: Optional[Callable[[], None]] = None,
@@ -390,6 +391,35 @@ class BC(algo_base.DemonstrationAlgorithm):
         progress_bar: bool = True,
         reset_tensorboard: bool = False,
     ):
+        """Train with supervised learning for some number of epochs.
+
+        Here an 'epoch' is just a complete pass through the expert data loader,
+        as set by `self.set_expert_data_loader()`. Note, that when you specify
+        `n_batches` smaller than the number of batches in an epoch, the `on_epoch_end`
+        callback will never be called.
+
+        Args:
+            n_epochs: Number of complete passes made through expert data before ending
+                training. Provide exactly one of `n_epochs` and `n_batches`.
+            n_batches: Number of batches loaded from dataset before ending training.
+                Provide exactly one of `n_epochs` and `n_batches`.
+            on_epoch_end: Optional callback with no parameters to run at the end of each
+                epoch.
+            on_batch_end: Optional callback with no parameters to run at the end of each
+                batch.
+            log_interval: Log stats after every log_interval batches.
+            log_rollouts_venv: If not None, then this VecEnv (whose observation and
+                actions spaces must match `self.observation_space` and
+                `self.action_space`) is used to generate rollout stats, including
+                average return and average episode length. If None, then no rollouts
+                are generated.
+            log_rollouts_n_episodes: Number of rollouts to generate when calculating
+                rollout stats. Non-positive number disables rollouts.
+            progress_bar: If True, then show a progress bar during training.
+            reset_tensorboard: If True, then start plotting to Tensorboard from x=0
+                even if `.train()` logged to Tensorboard previously. Has no practical
+                effect if `.train()` is being called for the first time.
+        """
         if reset_tensorboard:
             self._bc_logger.reset_tensorboard_steps()
         self._bc_logger.log_epoch(0)
@@ -450,18 +480,6 @@ class BC(algo_base.DemonstrationAlgorithm):
                 on_batch_end()
 
         self.optimizer.zero_grad()
-
-        return batches_with_stats
-
-    def _train_loop(
-        self,
-        batches_with_stats: Iterable[
-            Tuple[Tuple[int, int, int], types.TransitionMapping]
-        ],
-        process_batch: Callable[[], None],
-    ):
-        num_samples_so_far = 0
-        batch_num = 0
         for (
             batch_num,
             minibatch_size,
@@ -490,73 +508,6 @@ class BC(algo_base.DemonstrationAlgorithm):
             # if there remains an incomplete batch
             batch_num += 1
             process_batch()
-
-    def train(
-        self,
-        *,
-        n_epochs: Optional[int] = None,
-        n_batches: Optional[int] = None,
-        on_epoch_end: Optional[Callable[[], None]] = None,
-        on_batch_end: Optional[Callable[[], None]] = None,
-        log_interval: int = 500,
-        log_rollouts_venv: Optional[vec_env.VecEnv] = None,
-        log_rollouts_n_episodes: int = 5,
-        progress_bar: bool = True,
-        reset_tensorboard: bool = False,
-    ):
-        """Train with supervised learning for some number of epochs.
-
-        Here an 'epoch' is just a complete pass through the expert data loader,
-        as set by `self.set_expert_data_loader()`. Note, that when you specify
-        `n_batches` smaller than the number of batches in an epoch, the `on_epoch_end`
-        callback will never be called.
-
-        Args:
-            n_epochs: Number of complete passes made through expert data before ending
-                training. Provide exactly one of `n_epochs` and `n_batches`.
-            n_batches: Number of batches loaded from dataset before ending training.
-                Provide exactly one of `n_epochs` and `n_batches`.
-            on_epoch_end: Optional callback with no parameters to run at the end of each
-                epoch.
-            on_batch_end: Optional callback with no parameters to run at the end of each
-                batch.
-            log_interval: Log stats after every log_interval batches.
-            log_rollouts_venv: If not None, then this VecEnv (whose observation and
-                actions spaces must match `self.observation_space` and
-                `self.action_space`) is used to generate rollout stats, including
-                average return and average episode length. If None, then no rollouts
-                are generated.
-            log_rollouts_n_episodes: Number of rollouts to generate when calculating
-                rollout stats. Non-positive number disables rollouts.
-            progress_bar: If True, then show a progress bar during training.
-            reset_tensorboard: If True, then start plotting to Tensorboard from x=0
-                even if `.train()` logged to Tensorboard previously. Has no practical
-                effect if `.train()` is being called for the first time.
-        """
-        batches_with_stats = self._prep_train(
-            n_epochs=n_epochs,
-            n_batches=n_batches,
-            on_epoch_end=on_epoch_end,
-            on_batch_end=on_batch_end,
-            log_interval=log_interval,
-            log_rollouts_venv=log_rollouts_venv,
-            log_rollouts_n_episodes=log_rollouts_n_episodes,
-            progress_bar=progress_bar,
-            reset_tensorboard=reset_tensorboard,
-        )
-        self._train_loop(
-            batches_with_stats,
-            n_epochs=n_epochs,
-            n_batches=n_batches,
-            on_epoch_end=on_epoch_end,
-            on_batch_end=on_batch_end,
-            log_interval=log_interval,
-            log_rollouts_venv=log_rollouts_venv,
-            log_rollouts_n_episodes=log_rollouts_n_episodes,
-            progress_bar=progress_bar,
-            reset_tensorboard=reset_tensorboard,
-            #
-        )
 
 
 class InverseMLP(th.nn.Module):
