@@ -662,12 +662,14 @@ class BCO(BC):
         self,
         batch: Dict[str, Union[th.Tensor, list, np.ndarray]],
     ):
-        obs = util.safe_to_tensor(batch["obs"], device=self.policy.device)
-        c_obs = torch.cat(
-            [obs[:, :-1], obs[:, 1:]],
-            dim=1,
+        obs1 = util.safe_to_tensor(
+            batch["obs"], device=self.policy.device, dtype=th.float32
         )
-        breakpoint()
-        self.inverse_model()
-        breakpoint()
-        return util.safe_to_tensor(batch["acts"], device=self.policy.device)
+        obs2 = util.safe_to_tensor(
+            batch["next_obs"], device=self.policy.device, dtype=th.float32
+        )
+        c_obs = th.cat(
+            [obs1, obs2],
+            dim=-1,
+        )
+        return self.inverse_model(c_obs)
