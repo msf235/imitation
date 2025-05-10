@@ -650,6 +650,12 @@ class BCO(BC):
         )
         self.loss_calculator = BehaviorCloningLossCalculator(ent_weight, l2_weight)
         self.set_demonstrations(state_observations)
+        optimizer_kwargs = optimizer_kwargs or {}
+        params = list(self.policy.parameters()) + list(self.inverse_model.parameters())
+        self.optimizer = optimizer_cls(
+            params,
+            **optimizer_kwargs,
+        )
         # In the policy, actions will be inferred (rather than given)
 
     # def set_demonstrations(self, demonstrations: algo_base.AnyTransitions) -> None:
