@@ -535,6 +535,43 @@ class InverseMLP(th.nn.Module):
         return self.model(x)
 
 
+class BCO2(BC):
+    """Behavioral Cloning from Observations (BCO)."""
+
+    def __init__(
+        self,
+        *,
+        observation_space: gym.Space,
+        action_space: gym.Space,
+        rng: np.random.Generator,
+        policy: Optional[policies.ActorCriticPolicy] = None,
+        state_observations: Optional[algo_base.AnyTransitions] = None,
+        batch_size: int = 32,
+        minibatch_size: Optional[int] = None,
+        optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
+        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
+        ent_weight: float = 1e-3,
+        l2_weight: float = 0.0,
+        device: Union[str, th.device] = "auto",
+        custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
+    ):
+        super().__init__(
+            observation_space=observation_space,
+            action_space=action_space,
+            rng=rng,
+            policy=policy,
+            demonstrations=state_observations,  #
+            batch_size=batch_size,
+            minibatch_size=minibatch_size,
+            optimizer_cls=optimizer_cls,
+            optimizer_kwargs=optimizer_kwargs,
+            ent_weight=ent_weight,
+            l2_weight=l2_weight,
+            device=device,
+            custom_logger=custom_logger,
+        )
+
+
 class BCO(BC):
     """Behavioral Cloning from Observations (BCO)."""
 
@@ -555,7 +592,7 @@ class BCO(BC):
         device: Union[str, th.device] = "auto",
         custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
     ):
-        """Builds BC.
+        """Builds BC0.
 
         Args:
             observation_space: the observation space of the environment.
@@ -612,11 +649,25 @@ class BCO(BC):
             act_dim=action_space.shape[0],
         )
         self.loss_calculator = BehaviorCloningLossCalculator(ent_weight, l2_weight)
+        self.set_demonstrations(state_observations)
         # In the policy, actions will be inferred (rather than given)
 
-    def _infer_actions(self, batch_observations):
-        s_t = batch_observations[:-1]
-        s_tp1 = batch_observations[1:]
-        batch_transitions = th.cat([s_t, s_tp1], dim=1)
-        batch_inferred_actions = self.inverse_model(batch_transitions)
-        return batch_inferred_actions
+    # def set_demonstrations(self, demonstrations: algo_base.AnyTransitions) -> None:
+    #     self._demo_data_loader = algo_base.make_data_loader(
+    #         demonstrations,
+    #         self.minibatch_size,
+    #     )
+
+    def _get_acts(
+        self,
+        batch: Dict[str, Union[th.Tensor, list, np.ndarray]],
+    ):
+        obs = util.safe_to_tensor(batch["obs"], device=self.policy.device)
+        c_obs = torch.cat(
+            [obs[:, :-1], obs[:, 1:]],
+            dim=1,
+        )
+        breakpoint()
+        self.inverse_model()
+        breakpoint()
+        return util.safe_to_tensor(batch["acts"], device=self.policy.device)

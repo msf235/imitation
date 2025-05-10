@@ -219,6 +219,7 @@ class _WrappedDataLoader:
                 `self.expected_batch_size`.
         """
         for batch in self.data_loader:
+            breakpoint()
             if len(batch["obs"]) != self.expected_batch_size:
                 raise ValueError(
                     f"Expected batch size {self.expected_batch_size} "
@@ -271,7 +272,9 @@ def make_data_loader(
             transitions = cast(Iterable[types.Trajectory], transitions)
             transitions = rollout.flatten_trajectories(list(transitions))
 
-    if isinstance(transitions, types.TransitionsMinimal):
+    if isinstance(transitions, types.TransitionsMinimal) or isinstance(
+        transitions, types.ObservationTransitionsMinimal
+    ):
         if len(transitions) < batch_size:
             raise ValueError(
                 f"Number of transitions in `demonstrations` {len(transitions)} "
