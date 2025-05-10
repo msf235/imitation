@@ -381,9 +381,8 @@ class BC(algo_base.DemonstrationAlgorithm):
 
     def _get_acts(
         self,
-        batch,
-        # Dict[Union[th.Tensor, Dict[str, th.Tensor]]]
-    ):  # TODO: check type
+        batch: Dict[str, Union[th.Tensor, list, np.ndarray]],
+    ):
         return util.safe_to_tensor(batch["acts"], device=self.policy.device)
 
     def train(
