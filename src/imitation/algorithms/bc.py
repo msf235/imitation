@@ -535,43 +535,6 @@ class InverseMLP(th.nn.Module):
         return self.model(x)
 
 
-class BCO2(BC):
-    """Behavioral Cloning from Observations (BCO)."""
-
-    def __init__(
-        self,
-        *,
-        observation_space: gym.Space,
-        action_space: gym.Space,
-        rng: np.random.Generator,
-        policy: Optional[policies.ActorCriticPolicy] = None,
-        state_observations: Optional[algo_base.AnyTransitions] = None,
-        batch_size: int = 32,
-        minibatch_size: Optional[int] = None,
-        optimizer_cls: Type[th.optim.Optimizer] = th.optim.Adam,
-        optimizer_kwargs: Optional[Mapping[str, Any]] = None,
-        ent_weight: float = 1e-3,
-        l2_weight: float = 0.0,
-        device: Union[str, th.device] = "auto",
-        custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
-    ):
-        super().__init__(
-            observation_space=observation_space,
-            action_space=action_space,
-            rng=rng,
-            policy=policy,
-            demonstrations=state_observations,  #
-            batch_size=batch_size,
-            minibatch_size=minibatch_size,
-            optimizer_cls=optimizer_cls,
-            optimizer_kwargs=optimizer_kwargs,
-            ent_weight=ent_weight,
-            l2_weight=l2_weight,
-            device=device,
-            custom_logger=custom_logger,
-        )
-
-
 class BCO(BC):
     """Behavioral Cloning from Observations (BCO)."""
 
@@ -657,12 +620,6 @@ class BCO(BC):
             **optimizer_kwargs,
         )
         # In the policy, actions will be inferred (rather than given)
-
-    # def set_demonstrations(self, demonstrations: algo_base.AnyTransitions) -> None:
-    #     self._demo_data_loader = algo_base.make_data_loader(
-    #         demonstrations,
-    #         self.minibatch_size,
-    #     )
 
     def _get_acts(
         self,

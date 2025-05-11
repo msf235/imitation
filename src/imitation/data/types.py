@@ -534,6 +534,32 @@ def transitions_collate_fn(
 TransitionsMinimalSelf = TypeVar("TransitionsMinimalSelf", bound="TransitionsMinimal")
 
 
+def remove_acts(input_trajs: List[Union[TrajectoryWithRew, Trajectory]]):
+    """Remove actions from Trajectories, yielding Observation Sequences.
+    Inputs are a list of Trajectories, and outputs are a list of Observation Sequences.
+    """
+    output_obs_seqs = []
+    for traj in input_trajs:
+        if isinstance(traj, TrajectoryWithRew):
+            obs_seq = ObservationSequenceWithRew(
+                traj.obs, traj.infos, traj.terminal, traj.rews
+            )
+        elif isinstance(traj, Trajectory):
+            obs_seq = ObservationSequence(
+                traj.obs,
+                traj.infos,
+                traj.terminal,
+            )
+        else:
+            raise TypeError(
+                "Expected a list of Trajectory or TrajectoryWithRew objects, "
+                f"but got {type(traj)}",
+            )
+        output_obs_seqs.append(obs_seq)
+        # We need to remove the acts field from the dataclass.
+    return output_obs_seqs
+
+
 @dataclasses.dataclass(frozen=True)
 class ObservationTransitionsMinimal(
     th_data.Dataset, Sequence[Mapping[str, np.ndarray]]
