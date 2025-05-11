@@ -560,7 +560,7 @@ def rollout_stats(
     return out_stats
 
 
-def flatten_observation_sequence(
+def flatten_observation_sequences(
     observations: Iterable[types.ObservationSequence],
 ) -> types.ObservationTransitions:
     """Flatten a series of ObservationSequence dictionaries into arrays.

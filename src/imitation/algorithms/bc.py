@@ -555,7 +555,7 @@ class BCO(BC):
         device: Union[str, th.device] = "auto",
         custom_logger: Optional[imit_logger.HierarchicalLogger] = None,
     ):
-        """Builds BC0.
+        """Builds BCO.
 
         Args:
             observation_space: the observation space of the environment.
