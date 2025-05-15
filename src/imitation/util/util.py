@@ -27,8 +27,45 @@ import numpy as np
 import torch as th
 from stable_baselines3.common import monitor, policies
 from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecEnv
+from torch import nn
+import torch
 
 from imitation.data.types import AnyPath
+
+
+def weight_initializer(tensor: torch.Tensor, std: float = 0.1):
+    """
+    Truncated normal initializer with given standard deviation.
+    """
+    # PyTorch provides trunc_normal_; requires torch ≥1.10
+    with torch.no_grad():
+        nn.init.trunc_normal_(tensor, mean=0.0, std=std, a=-2 * std, b=2 * std)
+
+
+def bias_initializer(tensor: torch.Tensor, val: float = 0.01):
+    """
+    Constant initializer for biases.
+    """
+    with torch.no_grad():
+        nn.init.constant_(tensor, val)
+
+
+def get_shuffle_idx(num: int, batch_size: int):
+    """
+    Split indices [0..num) into shuffled batches of size batch_size.
+    Returns a list of numpy.ndarray, each containing indices for one batch.
+    """
+    idx = np.arange(num)
+    np.random.shuffle(idx)
+    splits = []
+    cur = 0
+    remaining = num
+    while remaining > batch_size:
+        remaining -= batch_size
+        if remaining != 0:
+            splits.append(cur + batch_size)
+            cur += batch_size
+    return np.split(idx, splits)
 
 
 def save_policy(policy: policies.BasePolicy, policy_path: AnyPath) -> None:
@@ -169,13 +206,11 @@ def make_vec_env(
 @overload
 def make_seeds(
     rng: np.random.Generator,
-) -> int:
-    ...
+) -> int: ...
 
 
 @overload
-def make_seeds(rng: np.random.Generator, n: int) -> List[int]:
-    ...
+def make_seeds(rng: np.random.Generator, n: int) -> List[int]: ...
 
 
 def make_seeds(
@@ -262,13 +297,13 @@ def safe_to_tensor(array: Union[np.ndarray, th.Tensor], **kwargs) -> th.Tensor:
 
 
 @overload
-def safe_to_numpy(obj: Union[np.ndarray, th.Tensor], warn: bool = False) -> np.ndarray:
-    ...
+def safe_to_numpy(
+    obj: Union[np.ndarray, th.Tensor], warn: bool = False
+) -> np.ndarray: ...
 
 
 @overload
-def safe_to_numpy(obj: None, warn: bool = False) -> None:
-    ...
+def safe_to_numpy(obj: None, warn: bool = False) -> None: ...
 
 
 def safe_to_numpy(
