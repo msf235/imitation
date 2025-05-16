@@ -1,15 +1,11 @@
 import numpy as np
-import gymnasium as gym
 from imitation.policies.serialize import load_policy
 from imitation.util.util import make_vec_env
 from imitation.data.wrappers import RolloutInfoWrapper
 from imitation.data import rollout as rollout_module
-from gymnasium.spaces import Box, Discrete
 
-# from utils import args
 from imitation.algorithms import bco
 
-# from bco import BCOfromObservation, generate_random_demonstrations
 from stable_baselines3.common.evaluation import evaluate_policy
 
 if __name__ == "__main__":
@@ -45,7 +41,7 @@ if __name__ == "__main__":
     print(f"Collected {len(idm_transitions.obs)} random IDM transitions")
 
     # 4. Instantiate BCOfromObservation
-    bco_trainer = bco.BCOfromObservation(
+    bco_trainer = bco.BCO(
         observation_space=env.observation_space,
         action_space=env.action_space,
         rng=rng,
