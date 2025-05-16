@@ -2,6 +2,7 @@ import os
 import time
 import numpy as np
 import torch
+import torch as th  # TODO: resolve duplicate
 import torch.nn as nn
 import torch.optim as optim
 import gymnasium as gym
@@ -22,6 +23,18 @@ from imitation.data import rollout as rollout_module
 from imitation.data import types
 import tqdm
 from stable_baselines3.common import policies, torch_layers, utils, vec_env
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Iterator,
+    Mapping,
+    Optional,
+    Tuple,
+    Type,
+    Union,
+)
 
 
 def _init_weights(m: nn.Module):
@@ -252,7 +265,7 @@ class BCOfromObservation(BC):
                 types.maybe_unwrap_dictobs(batch["next_obs"]),
             )
 
-            acts = self._get_acts(batch)
+            acts = util.safe_to_tensor(batch["acts"], device=self.policy.device)
             pred = self.idm_net(obs_tensor, next_obs_tensor)
             loss = self.idm_criterion(pred, acts)
             losses.append(loss.item())
@@ -260,127 +273,31 @@ class BCOfromObservation(BC):
             loss.backward()
             self.opt_idm.step()
 
-    def train_expert(
+    def _get_acts(
         self,
-        *,
-        n_epochs: Optional[int] = None,
-        n_batches: Optional[int] = None,
-        on_epoch_end: Optional[Callable[[], None]] = None,
-        on_batch_end: Optional[Callable[[], None]] = None,
-        log_interval: int = 500,
-        log_rollouts_venv: Optional[vec_env.VecEnv] = None,
-        log_rollouts_n_episodes: int = 5,
-        progress_bar: bool = True,
-        reset_tensorboard: bool = False,
+        batch: Dict[str, Union[th.Tensor, list, np.ndarray]],
     ):
-        if reset_tensorboard:
-            self._bc_logger.reset_tensorboard_steps()
-
-        self._bc_logger.log_epoch(0)
-
-        compute_rollout_stats = RolloutStatsComputer(
-            log_rollouts_venv,
-            log_rollouts_n_episodes,
+        obs_tensor: Union[
+            th.Tensor, Dict[str, th.Tensor]
+        ]  # TODO: do the same with next_obs_tensor?
+        obs_tensor = types.map_maybe_dict(
+            lambda x: util.safe_to_tensor(
+                x, device=self.policy.device
+            ),  # TODO: remove self.policy
+            types.maybe_unwrap_dictobs(batch["obs"]),
         )
-
-        def _on_epoch_end(epoch_number: int):
-            if tqdm_progress_bar is not None:
-                total_num_epochs_str = f"of {n_epochs}" if n_epochs is not None else ""
-                tqdm_progress_bar.display(
-                    f"Epoch {epoch_number} {total_num_epochs_str}",
-                    pos=1,
-                )
-            self._bc_logger.log_epoch(epoch_number + 1)
-            if on_epoch_end is not None:
-                on_epoch_end()
-
-        mini_per_batch = self.batch_size // self.minibatch_size
-        n_minibatches = n_batches * mini_per_batch if n_batches is not None else None
-
-        # Initial IDM training
-        assert self._idm_data_loader is not None
-        idm_batches = BatchIteratorWithEpochEndCallback(
-            self._idm_data_loader,
-            n_epochs,
-            n_minibatches,
-            _on_epoch_end,
+        next_obs_tensor = types.map_maybe_dict(
+            lambda x: util.safe_to_tensor(
+                x, device=self.policy.device
+            ),  # TODO: remove self.policy
+            types.maybe_unwrap_dictobs(batch["next_obs"]),
         )
-
-        self.idm_net.train()
-        for idx in util.get_shuffle_idx(len(states), self.batch_size):
-            bs_np = np.array([states[i] for i in idx], dtype=np.float32)
-            bs = torch.from_numpy(bs_np).to(self.idm_net.net[0].weight.device)
-            bns_np = np.array([next_states[i] for i in idx], dtype=np.float32)
-            bns = torch.from_numpy(bns_np).to(bs.device)
-            if self.continuous:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                ba = torch.from_numpy(ba_np).to(bs.device)
-                pred = self.idm_net(bs, bns)
-                loss = self.idm_criterion(pred, ba)
-            else:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                labels = torch.from_numpy(ba_np.argmax(axis=1).astype(np.int64)).to(
-                    bs.device
-                )
-                logits = self.idm_net(bs, bns)
-                loss = self.idm_criterion(logits, labels)
-            self.opt_idm.zero_grad()
-            loss.backward()
-            self.opt_idm.step()
-
-        batches_with_stats = enumerate_batches(demonstration_batches)
-        tqdm_progress_bar: Optional[tqdm.tqdm] = None
-
-        S_pre, nS_pre, A_pre = self.pre_demonstration()
-        self.update_idm(S_pre, nS_pre, A_pre)
-        # Main loop
-        epochs = n_epochs or self.max_epochs
-        for ep in range(epochs):
-            S, nS = self.sample_demo()
-            A_idm = self.eval_idm(S, nS)
-            self.update_policy(S, A_idm)
-            S2, nS2, A2 = self.post_demonstration()
-            self.update_idm(S2, nS2, A2)
-            if (ep + 1) % log_interval == 0:
-                ploss = self.get_policy_loss(S, A_idm)
-                idmloss = self.get_idm_loss(S2, nS2, A2)
-                self.logger.record("bco/policy_loss", ploss)
-                self.logger.record("bco/idm_loss", idmloss)
-                self.logger.dump(ep)
-            if on_epoch_end:
-                on_epoch_end()
-
-        assert self._demo_data_loader is not None
-        demonstration_batches = BatchIteratorWithEpochEndCallback(
-            self._demo_data_loader,
-            n_epochs,
-            n_minibatches,
-            _on_epoch_end,
-        )
-
-    def sample_demo(self):
-        idx = np.random.choice(
-            range(self.demo_examples), self.num_sample, replace=False
-        )
-        return [self.inputs[i] for i in idx], [self.targets[i] for i in idx]
-
-    def eval_policy(self, state_batch):
-        self.policy_net.eval()
-        with torch.no_grad():
-            sb = np.array(state_batch, dtype=np.float32)
-            x = torch.from_numpy(sb).to(self.policy_net.net[0].weight.device)
-            out = self.policy_net(x)
-        return out.cpu().numpy()
-
-    def eval_idm(self, state_batch, next_state_batch):
-        self.idm_net.eval()
-        with torch.no_grad():
-            sb = np.array(state_batch, dtype=np.float32)
-            nsb = np.array(next_state_batch, dtype=np.float32)
-            s = torch.from_numpy(sb).to(self.idm_net.net[0].weight.device)
-            ns = torch.from_numpy(nsb).to(self.idm_net.net[0].weight.device)
-            out = self.idm_net(s, ns)
-        return out.cpu().numpy()
+        inferred_acts_raw = self.idm_net(obs_tensor, next_obs_tensor)
+        inferred_acts_raw = util.safe_to_tensor(
+            inferred_acts_raw, device=self.policy.device
+        )  # TODO: remove policy reference
+        inferred_acts = torch.argmax(inferred_acts_raw, dim=1)
+        return inferred_acts
 
     def update_policy(self, states, actions):
         self.policy_net.train()
