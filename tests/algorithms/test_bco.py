@@ -8,18 +8,23 @@ from imitation.algorithms import bco
 
 from stable_baselines3.common.evaluation import evaluate_policy
 
+# env_name = "seals:seals/CartPole-v0"
+# env_name = "seals:seals/MountainCar-v0"
+# env_name = "seals:seals/Walker2d-v1"
+env_name = "seals:seals/RiskyPath-v0"
+
 if __name__ == "__main__":
     # 1. Load expert policy
     rng = np.random.default_rng(0)
     env = make_vec_env(
-        "seals:seals/CartPole-v0",
+        env_name,
         rng=rng,
         post_wrappers=[lambda env, _: RolloutInfoWrapper(env)],
     )
     expert = load_policy(
         "ppo-huggingface",
         organization="HumanCompatibleAI",
-        env_name="seals:seals/CartPole-v0",
+        env_name=env_name,
         venv=env,
     )
     print("Expert policy ready")
@@ -47,13 +52,13 @@ if __name__ == "__main__":
         rng=rng,
         demonstrations=expert_transitions,
         idm_demonstrations=idm_transitions,
-        continuous=False,
+        optimizer_kwargs={"lr": 1e-2},
     )
     print("BCO agent instantiated")
 
     # reward_before_training, _ = evaluate_policy(bco_trainer.policy_net, env, 10)
     # print(f"Reward before training: {reward_before_training}")
-    bco_trainer.train_idm(n_epochs=10)
+    bco_trainer.train_idm(n_epochs=100)
 
     # action_loss_before_training, _ = evaluate_policy(bco_trainer.policy_net, env, 10)
     # print(f"Reward before training: {reward_before_training}")

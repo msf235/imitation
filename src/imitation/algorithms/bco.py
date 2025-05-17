@@ -37,7 +37,7 @@ def generate_random_demonstrations(
 
     rollouts = rollout_module.rollout(
         random_policy_fn,
-        env,
+        env,  # TODO: resolve that this should be a venv
         rollout_module.make_sample_until(min_timesteps=None, min_episodes=num_episodes),
         rng=rng,
     )
@@ -77,7 +77,6 @@ class BCO(BC):
         demonstrations,
         idm_demonstrations,
         policy: Optional[policies.ActorCriticPolicy] = None,
-        continuous: bool = False,
         batch_size: int = 32,
         minibatch_size: Optional[int] = None,
         optimizer_cls: Callable[..., th.optim.Optimizer] = th.optim.Adam,
@@ -96,9 +95,11 @@ class BCO(BC):
             **bc_kwargs,
         )
         # BCO parameters
-        self.continuous = continuous
         self.state_dim = observation_space.shape[0]
-        self.action_dim = action_space.shape[0] if continuous else action_space.n
+
+        discrete = isinstance(action_space, gym.spaces.Discrete)
+
+        self.action_dim = action_space.n if discrete else action_space.shape[0]
         # Networks
         # TODO: send to device
         self.idm_net = IDMModel(self.state_dim, self.action_dim)
@@ -108,10 +109,10 @@ class BCO(BC):
         optimizer_kwargs = optimizer_kwargs or {}
         self.opt_idm = optimizer_cls(self.idm_net.parameters(), **optimizer_kwargs)
         # Loss functions
-        if continuous:
-            self.idm_criterion = nn.MSELoss()
-        else:
+        if discrete:  # To do: other possibilities?
             self.idm_criterion = nn.CrossEntropyLoss()
+        else:
+            self.idm_criterion = nn.MSELoss()
         # IDM data loader
         self._idm_data_loader = algo_base.make_data_loader(
             idm_demonstrations,
@@ -187,13 +188,13 @@ class BCO(BC):
                     x, device=self.policy.device
                 ),  # TODO: remove self.policy
                 types.maybe_unwrap_dictobs(batch["obs"]),
-            )
+            ).float()  # TODO: maybe match this with network
             next_obs_tensor = types.map_maybe_dict(
                 lambda x: util.safe_to_tensor(
                     x, device=self.policy.device
                 ),  # TODO: remove self.policy
                 types.maybe_unwrap_dictobs(batch["next_obs"]),
-            )
+            ).float()
 
             acts = util.safe_to_tensor(batch["acts"], device=self.policy.device)
             pred = self.idm_net(obs_tensor, next_obs_tensor)
@@ -212,14 +213,21 @@ class BCO(BC):
         obs_tensor = types.map_maybe_dict(
             lambda x: util.safe_to_tensor(x, device=self.policy.device),
             types.maybe_unwrap_dictobs(batch["obs"]),
-        )
+        ).float()  # TODO: maybe match with network
         next_obs_tensor = types.map_maybe_dict(
             lambda x: util.safe_to_tensor(x, device=self.policy.device),
             types.maybe_unwrap_dictobs(batch["next_obs"]),
-        )
+        ).float()  # TODO: maybe match with network
         inferred_acts_raw = self.idm_net(obs_tensor, next_obs_tensor)
         inferred_acts_raw = util.safe_to_tensor(
             inferred_acts_raw, device=self.policy.device
         )
-        inferred_acts = th.argmax(inferred_acts_raw, dim=1)
+        inferred_acts = self._convert_idm_net_output(inferred_acts_raw)
         return inferred_acts
+
+    def _convert_idm_net_output(self, acts):
+        """Convert predicted actions output by idm_net to the format of the action space."""
+        if isinstance(self.action_space, gym.spaces.Discrete):
+            return th.argmax(acts, dim=1)
+        elif isinstance(self.action_space, gym.spaces.Box):
+            return th.clamp(acts, min=-1, max=1)

@@ -6,27 +6,35 @@ from imitation.data.wrappers import RolloutInfoWrapper
 from imitation.data import rollout as rollout_module
 from gymnasium.spaces import Box, Discrete
 
-# from utils import args
 from imitation.algorithms import bc
 
-# from bco import BCOfromObservation, generate_random_demonstrations
 from stable_baselines3.common.evaluation import evaluate_policy
+
+env_name = "seals:seals/CartPole-v0"
+# env_name = "seals:seals/MountainCar-v0"
+# env_name = "seals:seals/Walker2d-v1"
+# env_name = "seals:seals/RiskyPath-v0"
+
 
 if __name__ == "__main__":
     # 1. Load expert policy
     rng = np.random.default_rng(0)
     env = make_vec_env(
-        "seals:seals/CartPole-v0",
+        env_name,
         rng=rng,
         post_wrappers=[lambda env, _: RolloutInfoWrapper(env)],
     )
     expert = load_policy(
         "ppo-huggingface",
         organization="HumanCompatibleAI",
-        env_name="seals:seals/CartPole-v0",
+        env_name=env_name,
         venv=env,
     )
     print("Expert policy ready")
+    breakpoint()
+
+    reward, _ = evaluate_policy(expert, env, 10)
+    print("Expert reward: ", reward)
 
     # 2. Roll out expert to collect transitions (obs-only)
     rollouts_expert = rollout_module.rollout(
@@ -49,7 +57,7 @@ if __name__ == "__main__":
 
     # reward_before_training, _ = evaluate_policy(bco_trainer.policy_net, env, 10)
     # print(f"Reward before training: {reward_before_training}")
-    bc_trainer.train(n_epochs=1)
+    bc_trainer.train(n_epochs=100)
 
     reward_after_training, _ = evaluate_policy(bc_trainer.policy, env, 10)
     print(f"Reward after training: {reward_after_training}")
