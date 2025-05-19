@@ -1,27 +1,19 @@
-import os
-import time
 import numpy as np
-import torch
+import torch as th
 import torch.nn as nn
-import torch.optim as optim
 import gymnasium as gym
-from typing import Optional, Callable
+from typing import Callable, Dict, Optional, Union
 from imitation.util import util
-from torch.utils.tensorboard import SummaryWriter
 from imitation.algorithms.bc import (
     BC,
-    RolloutStatsComputer,
     BatchIteratorWithEpochEndCallback,
     enumerate_batches,
 )
 from imitation.algorithms import base as algo_base
-from imitation.policies.serialize import load_policy
-from imitation.util.util import make_vec_env
-from imitation.data.wrappers import RolloutInfoWrapper
 from imitation.data import rollout as rollout_module
 from imitation.data import types
 import tqdm
-from stable_baselines3.common import policies, torch_layers, utils, vec_env
+from stable_baselines3.common import vec_env, policies
 
 
 def _init_weights(m: nn.Module):
@@ -45,28 +37,12 @@ def generate_random_demonstrations(
 
     rollouts = rollout_module.rollout(
         random_policy_fn,
-        env,
+        env,  # TODO: resolve that this should be a venv
         rollout_module.make_sample_until(min_timesteps=None, min_episodes=num_episodes),
         rng=rng,
     )
     transitions = rollout_module.flatten_trajectories(rollouts)
     return transitions
-
-
-class PolicyModel(nn.Module):
-    def __init__(self, state_dim: int, action_dim: int):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(state_dim, 8),
-            nn.LeakyReLU(0.2),
-            nn.Linear(8, 8),
-            nn.LeakyReLU(0.2),
-            nn.Linear(8, action_dim),
-        )
-        self.apply(_init_weights)
-
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)
 
 
 class IDMModel(nn.Module):
@@ -81,12 +57,12 @@ class IDMModel(nn.Module):
         )
         self.apply(_init_weights)
 
-    def forward(self, state: torch.Tensor, next_state: torch.Tensor) -> torch.Tensor:
-        x = torch.cat([state, next_state], dim=-1)
+    def forward(self, state: th.Tensor, next_state: th.Tensor) -> th.Tensor:
+        x = th.cat([state, next_state], dim=-1)
         return self.net(x)
 
 
-class BCOfromObservation(BC):
+class BCO(BC):
     """
     BCO: Behavioral Cloning from Observation without expert actions.
     Accepts expert demonstrations and IDM demonstrations, using data loaders for both.
@@ -100,11 +76,10 @@ class BCOfromObservation(BC):
         rng: np.random.Generator,
         demonstrations,
         idm_demonstrations,
-        policy_network: Optional[PolicyModel] = None,
-        continuous: bool = False,
+        policy: Optional[policies.ActorCriticPolicy] = None,
         batch_size: int = 32,
         minibatch_size: Optional[int] = None,
-        optimizer_cls: Callable[..., optim.Optimizer] = optim.Adam,
+        optimizer_cls: Callable[..., th.optim.Optimizer] = th.optim.Adam,
         optimizer_kwargs: Optional[dict] = None,
         **bc_kwargs,
     ):
@@ -113,62 +88,36 @@ class BCOfromObservation(BC):
             observation_space=observation_space,
             action_space=action_space,
             rng=rng,
-            policy=None,
+            policy=policy,
             demonstrations=demonstrations,
             batch_size=batch_size,
             minibatch_size=minibatch_size,
             **bc_kwargs,
         )
-        # TODO: delete or overwrite self.policy
         # BCO parameters
-        self.continuous = continuous
         self.state_dim = observation_space.shape[0]
-        self.action_dim = action_space.shape[0] if continuous else action_space.n
+
+        discrete = isinstance(action_space, gym.spaces.Discrete)
+
+        self.action_dim = action_space.n if discrete else action_space.shape[0]
         # Networks
         # TODO: send to device
-        self.policy_net = policy_network or PolicyModel(self.state_dim, self.action_dim)
         self.idm_net = IDMModel(self.state_dim, self.action_dim)
         # Optimizers
         if optimizer_kwargs and "weight_decay" in optimizer_kwargs:
             raise ValueError("Use the parameter l2_weight instead of weight_decay.")
         optimizer_kwargs = optimizer_kwargs or {}
-        self.opt_policy = optimizer_cls(
-            self.policy_net.parameters(), **optimizer_kwargs
-        )
         self.opt_idm = optimizer_cls(self.idm_net.parameters(), **optimizer_kwargs)
         # Loss functions
-        if continuous:
-            self.policy_criterion = nn.MSELoss()
-            self.idm_criterion = nn.MSELoss()
-        else:
-            self.policy_criterion = nn.CrossEntropyLoss()
+        if discrete:  # To do: other possibilities?
             self.idm_criterion = nn.CrossEntropyLoss()
+        else:
+            self.idm_criterion = nn.MSELoss()
         # IDM data loader
         self._idm_data_loader = algo_base.make_data_loader(
             idm_demonstrations,
             self.minibatch_size,
         )
-        self._idm_iter = iter(self._idm_data_loader)
-
-        # self.loss_calculator = BehaviorCloningLossCalculator(ent_weight, l2_weight)
-
-    def pre_demonstration(self):
-        """
-        Fetch next minibatch from the IDM data loader.
-        Returns lists of (state, next_state, action).
-        """
-        try:
-            batch = next(self._idm_iter)
-        except StopIteration:
-            self._idm_iter = iter(self._idm_data_loader)
-            batch = next(self._idm_iter)
-        obs = batch["obs"]
-        next_obs = batch["next_obs"]
-        acts = batch["acts"]
-        S = [o for o in obs]
-        nS = [n for n in next_obs]
-        A = [a for a in acts]
-        return S, nS, A
 
     def train_idm(
         self,
@@ -188,11 +137,6 @@ class BCOfromObservation(BC):
             self._bc_logger.reset_tensorboard_steps()
 
         self._bc_logger.log_epoch(0)
-
-        compute_rollout_stats = RolloutStatsComputer(
-            log_rollouts_venv,
-            log_rollouts_n_episodes,
-        )
 
         losses = []
 
@@ -244,15 +188,15 @@ class BCOfromObservation(BC):
                     x, device=self.policy.device
                 ),  # TODO: remove self.policy
                 types.maybe_unwrap_dictobs(batch["obs"]),
-            )
+            ).float()  # TODO: maybe match this with network
             next_obs_tensor = types.map_maybe_dict(
                 lambda x: util.safe_to_tensor(
                     x, device=self.policy.device
                 ),  # TODO: remove self.policy
                 types.maybe_unwrap_dictobs(batch["next_obs"]),
-            )
+            ).float()
 
-            acts = self._get_acts(batch)
+            acts = util.safe_to_tensor(batch["acts"], device=self.policy.device)
             pred = self.idm_net(obs_tensor, next_obs_tensor)
             loss = self.idm_criterion(pred, acts)
             losses.append(loss.item())
@@ -260,214 +204,30 @@ class BCOfromObservation(BC):
             loss.backward()
             self.opt_idm.step()
 
-    def train_expert(
+    def _get_acts(
         self,
-        *,
-        n_epochs: Optional[int] = None,
-        n_batches: Optional[int] = None,
-        on_epoch_end: Optional[Callable[[], None]] = None,
-        on_batch_end: Optional[Callable[[], None]] = None,
-        log_interval: int = 500,
-        log_rollouts_venv: Optional[vec_env.VecEnv] = None,
-        log_rollouts_n_episodes: int = 5,
-        progress_bar: bool = True,
-        reset_tensorboard: bool = False,
+        batch: Dict[str, Union[th.Tensor, list, np.ndarray]],
     ):
-        if reset_tensorboard:
-            self._bc_logger.reset_tensorboard_steps()
-
-        self._bc_logger.log_epoch(0)
-
-        compute_rollout_stats = RolloutStatsComputer(
-            log_rollouts_venv,
-            log_rollouts_n_episodes,
+        obs_tensor: Union[th.Tensor, Dict[str, th.Tensor]]
+        next_obs_tensor: Union[th.Tensor, Dict[str, th.Tensor]]
+        obs_tensor = types.map_maybe_dict(
+            lambda x: util.safe_to_tensor(x, device=self.policy.device),
+            types.maybe_unwrap_dictobs(batch["obs"]),
+        ).float()  # TODO: maybe match with network
+        next_obs_tensor = types.map_maybe_dict(
+            lambda x: util.safe_to_tensor(x, device=self.policy.device),
+            types.maybe_unwrap_dictobs(batch["next_obs"]),
+        ).float()  # TODO: maybe match with network
+        inferred_acts_raw = self.idm_net(obs_tensor, next_obs_tensor)
+        inferred_acts_raw = util.safe_to_tensor(
+            inferred_acts_raw, device=self.policy.device
         )
+        inferred_acts = self._convert_idm_net_output(inferred_acts_raw)
+        return inferred_acts
 
-        def _on_epoch_end(epoch_number: int):
-            if tqdm_progress_bar is not None:
-                total_num_epochs_str = f"of {n_epochs}" if n_epochs is not None else ""
-                tqdm_progress_bar.display(
-                    f"Epoch {epoch_number} {total_num_epochs_str}",
-                    pos=1,
-                )
-            self._bc_logger.log_epoch(epoch_number + 1)
-            if on_epoch_end is not None:
-                on_epoch_end()
-
-        mini_per_batch = self.batch_size // self.minibatch_size
-        n_minibatches = n_batches * mini_per_batch if n_batches is not None else None
-
-        # Initial IDM training
-        assert self._idm_data_loader is not None
-        idm_batches = BatchIteratorWithEpochEndCallback(
-            self._idm_data_loader,
-            n_epochs,
-            n_minibatches,
-            _on_epoch_end,
-        )
-
-        self.idm_net.train()
-        for idx in util.get_shuffle_idx(len(states), self.batch_size):
-            bs_np = np.array([states[i] for i in idx], dtype=np.float32)
-            bs = torch.from_numpy(bs_np).to(self.idm_net.net[0].weight.device)
-            bns_np = np.array([next_states[i] for i in idx], dtype=np.float32)
-            bns = torch.from_numpy(bns_np).to(bs.device)
-            if self.continuous:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                ba = torch.from_numpy(ba_np).to(bs.device)
-                pred = self.idm_net(bs, bns)
-                loss = self.idm_criterion(pred, ba)
-            else:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                labels = torch.from_numpy(ba_np.argmax(axis=1).astype(np.int64)).to(
-                    bs.device
-                )
-                logits = self.idm_net(bs, bns)
-                loss = self.idm_criterion(logits, labels)
-            self.opt_idm.zero_grad()
-            loss.backward()
-            self.opt_idm.step()
-
-        batches_with_stats = enumerate_batches(demonstration_batches)
-        tqdm_progress_bar: Optional[tqdm.tqdm] = None
-
-        S_pre, nS_pre, A_pre = self.pre_demonstration()
-        self.update_idm(S_pre, nS_pre, A_pre)
-        # Main loop
-        epochs = n_epochs or self.max_epochs
-        for ep in range(epochs):
-            S, nS = self.sample_demo()
-            A_idm = self.eval_idm(S, nS)
-            self.update_policy(S, A_idm)
-            S2, nS2, A2 = self.post_demonstration()
-            self.update_idm(S2, nS2, A2)
-            if (ep + 1) % log_interval == 0:
-                ploss = self.get_policy_loss(S, A_idm)
-                idmloss = self.get_idm_loss(S2, nS2, A2)
-                self.logger.record("bco/policy_loss", ploss)
-                self.logger.record("bco/idm_loss", idmloss)
-                self.logger.dump(ep)
-            if on_epoch_end:
-                on_epoch_end()
-
-        assert self._demo_data_loader is not None
-        demonstration_batches = BatchIteratorWithEpochEndCallback(
-            self._demo_data_loader,
-            n_epochs,
-            n_minibatches,
-            _on_epoch_end,
-        )
-
-    def sample_demo(self):
-        idx = np.random.choice(
-            range(self.demo_examples), self.num_sample, replace=False
-        )
-        return [self.inputs[i] for i in idx], [self.targets[i] for i in idx]
-
-    def eval_policy(self, state_batch):
-        self.policy_net.eval()
-        with torch.no_grad():
-            sb = np.array(state_batch, dtype=np.float32)
-            x = torch.from_numpy(sb).to(self.policy_net.net[0].weight.device)
-            out = self.policy_net(x)
-        return out.cpu().numpy()
-
-    def eval_idm(self, state_batch, next_state_batch):
-        self.idm_net.eval()
-        with torch.no_grad():
-            sb = np.array(state_batch, dtype=np.float32)
-            nsb = np.array(next_state_batch, dtype=np.float32)
-            s = torch.from_numpy(sb).to(self.idm_net.net[0].weight.device)
-            ns = torch.from_numpy(nsb).to(self.idm_net.net[0].weight.device)
-            out = self.idm_net(s, ns)
-        return out.cpu().numpy()
-
-    def update_policy(self, states, actions):
-        self.policy_net.train()
-        for idx in util.get_shuffle_idx(len(states), self.batch_size):
-            bs_np = np.array([states[i] for i in idx], dtype=np.float32)
-            bs = torch.from_numpy(bs_np).to(self.policy_net.net[0].weight.device)
-            if self.continuous:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                ba = torch.from_numpy(ba_np).to(bs.device)
-                pred = self.policy_net(bs)
-                loss = self.policy_criterion(pred, ba)
-            else:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                labels = torch.from_numpy(ba_np.argmax(axis=1).astype(np.int64)).to(
-                    bs.device
-                )
-                logits = self.policy_net(bs)
-                loss = self.policy_criterion(logits, labels)
-            self.opt_policy.zero_grad()
-            loss.backward()
-            self.opt_policy.step()
-
-    def update_idm(self, states, next_states, actions):
-        self.idm_net.train()
-        for idx in util.get_shuffle_idx(len(states), self.batch_size):
-            bs_np = np.array([states[i] for i in idx], dtype=np.float32)
-            bs = torch.from_numpy(bs_np).to(self.idm_net.net[0].weight.device)
-            bns_np = np.array([next_states[i] for i in idx], dtype=np.float32)
-            bns = torch.from_numpy(bns_np).to(bs.device)
-            if self.continuous:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                ba = torch.from_numpy(ba_np).to(bs.device)
-                pred = self.idm_net(bs, bns)
-                loss = self.idm_criterion(pred, ba)
-            else:
-                ba_np = np.array([actions[i] for i in idx], dtype=np.float32)
-                labels = torch.from_numpy(ba_np.argmax(axis=1).astype(np.int64)).to(
-                    bs.device
-                )
-                logits = self.idm_net(bs, bns)
-                loss = self.idm_criterion(logits, labels)
-            self.opt_idm.zero_grad()
-            loss.backward()
-            self.opt_idm.step()
-
-    def get_policy_loss(self, states, actions):
-        self.policy_net.eval()
-        with torch.no_grad():
-            s_np = np.array(states, dtype=np.float32)
-            s = torch.from_numpy(s_np).to(self.policy_net.net[0].weight.device)
-            if self.continuous:
-                a_np = np.array(actions, dtype=np.float32)
-                a = torch.from_numpy(a_np).to(s.device)
-                pred = self.policy_net(s)
-                loss = self.policy_criterion(pred, a)
-            else:
-                a_np = np.array(actions, dtype=np.float32)
-                labels = torch.from_numpy(a_np.argmax(axis=1).astype(np.int64)).to(
-                    s.device
-                )
-                logits = self.policy_net(s)
-                loss = self.policy_criterion(logits, labels)
-            return loss.item()
-
-    def get_idm_loss(self, states, next_states, actions):
-        self.idm_net.eval()
-        with torch.no_grad():
-            s_np = np.array(states, dtype=np.float32)
-            s = torch.from_numpy(s_np).to(self.idm_net.net[0].weight.device)
-            ns_np = np.array(next_states, dtype=np.float32)
-            ns = torch.from_numpy(ns_np).to(s.device)
-            if self.continuous:
-                a_np = np.array(actions, dtype=np.float32)
-                a = torch.from_numpy(a_np).to(s.device)
-                pred = self.idm_net(s, ns)
-                loss = self.idm_criterion(pred, a)
-            else:
-                a_np = np.array(actions, dtype=np.float32)
-                labels = torch.from_numpy(a_np.argmax(axis=1).astype(np.int64)).to(
-                    s.device
-                )
-                logits = self.idm_net(s, ns)
-                loss = self.idm_criterion(logits, labels)
-            return loss.item()
-
-    def post_demonstration(self):
-        raise NotImplementedError
-
-    def eval_rwd_policy(self, display: bool = False):
-        raise NotImplementedError
+    def _convert_idm_net_output(self, acts):
+        """Convert predicted actions output by idm_net to the format of the action space."""
+        if isinstance(self.action_space, gym.spaces.Discrete):
+            return th.argmax(acts, dim=1)
+        elif isinstance(self.action_space, gym.spaces.Box):
+            return th.clamp(acts, min=-1, max=1)
